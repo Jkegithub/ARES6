@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ARES-6 · Rettungsroboter-Simulation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 40 40" class="logo"><polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="none" stroke="#f2b705" stroke-width="2.5"/><circle cx="20" cy="20" r="5" fill="#29d3ff"/><path d="M20 8v6M20 26v6M9 14l5 3M26 23l5 3M9 26l5-3M26 17l5-3" stroke="#f2b705" stroke-width="2"/></svg>
+        <div>
+          <div class="title">ARES-6 <span>SECHSBEINIGER RETTUNGSROBOTER</span></div>
+          <div class="sub">INTERAKTIVE ROBOTIK-SIMULATION · KOLLISIONSSICHERE PHYSIK · BUILD 2.1</div>
+        </div>
+      </div>
+      <div class="chips">
+        <button id="tour-btn" class="chipbtn" title="Geführte Tour">? TOUR</button>
+        <div class="recwrap">
+          <button id="rec-btn" class="chipbtn" title="Video aufnehmen"><i class="dot"></i><span id="rec-label">AUFNAHME</span></button>
+          <div id="rec-menu" class="hidden">
+            <button id="rec-tab">Ganzer Tab mit Panels</button>
+            <button id="rec-canvas">Nur 3D-Fenster</button>
+          </div>
+        </div>
+        <div class="chip"><label>MISSION</label><b id="tb-mission">BEREITSCHAFT</b></div>
+        <div class="chip" id="tb-mode-chip"><label>MODUS</label><b id="tb-mode">MANUELL</b></div>
+        <div class="chip"><label>KOLLISIONSSCHUTZ</label><b id="tb-guard" class="ok">AKTIV · 0 VERHINDERT</b></div>
+        <div class="chip" id="tb-oracle-chip"><label>PHYSIK-ORAKEL</label><b id="tb-oracle" class="ok">0 VERSTÖSSE</b></div>
+        <div class="chip"><label>SIM</label><b id="tb-clock">00:00.0</b></div>
+        <div class="chip"><label>FPS</label><b id="tb-fps">--</b></div>
+      </div>
+      <div id="warnbar" class="hidden">⚠ <span id="warntext">WARNUNG</span></div>
+    </header>
+
+    <aside id="left"><div id="controls"></div></aside>
+
+    <main id="viewport">
+      <canvas id="c"></canvas>
+      <div class="hud corner tl"></div><div class="hud corner tr"></div><div class="hud corner bl"></div><div class="hud corner br"></div>
+      <div class="scanlines"></div>
+      <div id="demo-strip">
+        <span class="lbl">DEMO</span>
+        <button data-demo="walk">① LAUFEN</button>
+        <button data-demo="scan">② LIDAR + WÄRME</button>
+        <button data-demo="grab">③ GREIFEN</button>
+        <button data-demo="drone">④ DROHNE</button>
+        <button data-demo="fail">⑤ FEHLERTEST</button>
+        <button data-demo="climb">KLETTERN</button>
+        <button data-demo="tunnel">TUNNEL</button>
+      </div>
+      <div id="viewbtns">
+        <button data-view="follow" class="on">FOLGEN</button>
+        <button data-view="iso">ISO</button>
+        <button data-view="top">OBEN</button>
+        <button data-view="side">SEITE</button>
+        <button data-view="chase">HINTEN</button>
+      </div>
+      <div id="hud-readout"></div>
+      <div id="alert" class="hidden"></div>
+      <div id="dronecam" class="hidden"><div class="dc-head"><span class="rec"></span> DROHNENKAMERA · <b id="dc-state">ANGEDOCKT</b></div><div class="dc-foot" id="dc-foot">HÖHE 0.0 m</div></div>
+      <div id="estop" class="hidden">NOT-AUS<small>AKTUATOREN STROMLOS · „SYSTEME NEU STARTEN“ DRÜCKEN</small></div>
+      <div id="help">Linke Maus: drehen · Rechte Maus / Shift: verschieben · Rad: Zoom · W laufen · S stopp · A/D drehen · 1–5 Demos</div>
+      <div id="loaderr" class="hidden">Three.js konnte nicht vom CDN geladen werden. Beim ersten Start ist eine Internetverbindung nötig.</div>
+    </main>
+
+    <aside id="right">
+      <section class="panel" id="p-status"><h3>SYSTEMSTATUS</h3><div id="sys"></div></section>
+      <section class="panel" id="p-sensors"><h3>SENSORDATEN</h3><div id="sens"></div><div id="scanbar"><div id="scanfill"></div><span id="scantext">ÜBERLEBENDEN-SCAN BEREIT</span></div></section>
+      <section class="panel" id="p-legs"><h3>BEINSTATUS <span class="legend"><i class="g"></i>steht <i class="l"></i>hebt <i class="m"></i>schwingt <i class="e"></i>Fehler <i class="i"></i>Ruhe</span></h3><div id="legs"></div></section>
+      <section class="panel" id="p-map"><h3>MINIKARTE <span class="legend">N ↑</span></h3><canvas id="minimap" width="340" height="230"></canvas></section>
+      <section class="panel grow" id="p-log"><h3>MISSIONSLOG</h3><div id="log"></div></section>
+    </aside>
+
+    <footer id="bottombar">
+      <div id="cmdfb"><label>BEFEHL</label><span id="cmdtext">ARES-6 bereit.</span></div>
+      <div id="timeline"><label id="tl-name">KEINE AKTIVE AUFGABE</label><div id="tl-steps"></div><span id="tl-time"></span></div>
+      <div id="ticker"><label>LETZTES EREIGNIS</label><span id="tickertext">—</span></div>
+    </footer>
+  </div>
+
+  <!-- phone layout: bottom navigation + drawers -->
+  <nav id="mobilenav">
+    <button data-drawer="left">☰ STEUERUNG</button>
+    <button data-drawer="none" class="on">3D</button>
+    <button data-drawer="right">TELEMETRIE</button>
+  </nav>
+  <div id="drawer-shade"></div>
+
+  <div id="tour" class="hidden">
+    <div id="tour-spot"></div>
+    <div id="tour-card">
+      <div class="tc-head"><span id="tour-step">1 / 9</span><button id="tour-lang">EN</button><button id="tour-close" title="Schließen">✕</button></div>
+      <h4 id="tour-title"></h4>
+      <p id="tour-text"></p>
+      <div class="tc-foot"><button id="tour-prev">‹</button><button id="tour-try" class="try"></button><button id="tour-next">›</button></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>if (!window.THREE) document.getElementById('loaderr').classList.remove('hidden');</script>
+  <script src="js/core.js"></script>
+  <script src="js/physics.js"></script>
+  <script src="js/environment.js"></script>
+  <script src="js/leg.js"></script>
+  <script src="js/arm.js"></script>
+  <script src="js/robot.js"></script>
+  <script src="js/planner.js"></script>
+  <script src="js/loco.js"></script>
+  <script src="js/sensors.js"></script>
+  <script src="js/drone.js"></script>
+  <script src="js/missions.js"></script>
+  <script src="js/telemetry.js"></script>
+  <script src="js/oracle.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+  <script src="js/recorder.js"></script>
+  <script src="js/tour.js"></script>
+  <script src="tests/acceptance.js"></script>
+</body>
+</html>

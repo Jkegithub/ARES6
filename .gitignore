@@ -1,0 +1,6 @@
+node_modules/
+*.log
+*.mp4
+*.webm
+*.mov
+.claude/
