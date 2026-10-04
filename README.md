@@ -48,6 +48,11 @@ Optional ein cachefreier lokaler Server: `python tools/serve.py` → http://127.
 `js/loco.js` `js/planner.js` Gangart und A*-Planer · `js/sensors.js` `js/drone.js` ·
 `js/missions.js` · `js/telemetry.js` · `js/oracle.js` · `js/ui.js` `js/tour.js` `js/recorder.js` · `js/main.js`
 
+## Lizenz
+
+MIT — siehe [LICENSE](LICENSE). Fremdkomponenten werden zur Laufzeit geladen und stehen unter
+eigenen Lizenzen: Three.js r128 (MIT), Schriften Inter und JetBrains Mono über Google Fonts (SIL OFL 1.1).
+
 ## Grenzen
 
 Kinematische, kollisionsgeprüfte Bewegung — keine Kräfte-Dynamik. Trümmer fallen nur senkrecht.
