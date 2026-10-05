@@ -89,6 +89,24 @@
       return { ok: !why, why, a: this.clampAngles(a) };
     }
 
+    // IK for a level claw pointing horizontally along the arm's radial direction (front grip, e.g. into a shelf);
+    // roll 0 = jaws left/right of the object
+    solveFront(graspW, roll = 0) {
+      const p = this.root.worldToLocal(_t.copy(graspW));
+      const yaw = Math.atan2(-p.z, p.x);
+      const rr = Math.hypot(p.x, p.z) - (AC.palm + 0.11), wy = p.y; // wrist sits behind the grasp point
+      const L1 = AC.L1, L2 = AC.L2, Dd = Math.hypot(rr, wy);
+      let why = null;
+      if (Dd > L1 + L2 - 0.005) why = 'außer Reichweite'; else if (Dd < 0.25 || rr < 0.05) why = 'zu nah';
+      const Dc = U.clamp(Dd, 0.25, L1 + L2 - 0.005);
+      const elbow = -(Math.PI - Math.acos(U.clamp((L1 * L1 + L2 * L2 - Dc * Dc) / (2 * L1 * L2), -1, 1)));
+      const shoulder = Math.atan2(wy, rr) + Math.acos(U.clamp((L1 * L1 + Dc * Dc - L2 * L2) / (2 * L1 * Dc), -1, 1));
+      const wristPitch = -shoulder - elbow;
+      const a = { yaw, shoulder, elbow, wristPitch, wristRoll: roll };
+      for (const k of ['yaw', 'shoulder', 'elbow', 'wristPitch']) if (!why && (a[k] < LIM[k][0] || a[k] > LIM[k][1])) why = `Grenze ${{ yaw: 'Arm-Drehung', shoulder: 'Schulter', elbow: 'Ellbogen', wristPitch: 'Handgelenk' }[k]}`;
+      return { ok: !why, why, a: this.clampAngles(a) };
+    }
+
     points() {
       const P = this.pts;
       this.shoulderJ.getWorldPosition(P.shoulder); this.elbowJ.getWorldPosition(P.elbow); this.wristP.getWorldPosition(P.wrist);

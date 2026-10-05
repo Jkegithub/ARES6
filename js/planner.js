@@ -39,7 +39,7 @@
       for (const ob of W.obstacles) {
         if (ob.held || (ignore && ignore.has(ob))) continue;
         if (ob.bottom >= hi) continue;                                   // overhead structure clears the robot
-        if (ob.top <= prof.climb && ob.top < prof.bodyBottom - 0.06) continue; // legs step on/over it, chassis clears it
+        if (!ob.avoid && ob.top <= prof.climb && ob.top < prof.bodyBottom - 0.06) continue; // legs step on/over it, chassis clears it
         const y0 = Math.max(ob.bottom, lo), y1 = Math.min(ob.top, hi);
         const ys = [y0, (y0 + y1) / 2, y1];
         const reach = ob.radius + prof.R + 0.6;

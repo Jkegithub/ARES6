@@ -28,6 +28,8 @@
       if (mode !== 'nav') this.nav = null;
       if (mode === 'rotate') this.rotDir = opts.dir || 1;
       if (mode === 'turnTo') this.turnTarget = opts.yaw;
+      // precise manoeuvre along the current heading (forward > 0, backward < 0), heading is held
+      if (mode === 'shift') { const p = this.R.pose; this.shift = { x0: p.x, z0: p.z, yaw: p.yaw, dist: opts.dist || 0 }; }
       if (mode !== 'idle') for (const l of this.R.legs) if (l.mode === 'manual') this.plantLeg(l.id, true);
       A.State.emit('loco', mode);
       return true;
@@ -47,6 +49,13 @@
           const e = U.wrap(this.turnTarget - p.yaw);
           if (Math.abs(e) < 1.2 * D) { this.mode = this.nav && this.nav.status === 'turning' ? 'idle' : 'idle'; if (this.nav && this.nav.status === 'turning') this.nav.status = 'done'; A.State.emit('loco', 'idle'); break; }
           w = U.clamp(e * 1.4, -P.wmax, P.wmax); if (Math.abs(w) < 0.08) w = Math.sign(e) * 0.08;
+          break;
+        }
+        case 'shift': {
+          const sh = this.shift, along = (p.x - sh.x0) * Math.cos(sh.yaw) - (p.z - sh.z0) * Math.sin(sh.yaw), rem = sh.dist - along;
+          if (Math.abs(rem) < 0.01) { this.mode = 'idle'; A.State.emit('loco', 'idle'); break; }
+          v = U.clamp(rem * 1.2, -0.15, 0.15); if (Math.abs(v) < 0.03) v = Math.sign(rem) * 0.03;
+          w = U.clamp(U.wrap(sh.yaw - p.yaw) * 1.4, -P.wmax, P.wmax);
           break;
         }
         case 'nav': {
@@ -109,7 +118,7 @@
         // footing: pad must sit on a surface without touching anything else
         let blocked = false;
         for (const [dx, dz] of [[0, 0], [0.1, 0], [-0.1, 0], [0, 0.1], [0, -0.1]]) if (W.sphereHit(new V(contact.x + dx, contact.y + 0.02, contact.z + dz), LC.rPad)) { blocked = true; break; }
-        if (blocked) continue;
+        if (blocked || W.padHit(contact)) continue;
         // never step onto loose debris
         if (W.near(contact, 0.3).some((o) => o.kind === 'debris' && o.footprint(contact.x, contact.z, 0.14))) continue;
         // leg must reach + be collision free at the predicted touchdown pose
@@ -363,6 +372,7 @@
         }
       }
       if (this.mode === 'turnTo') { this.mode = 'idle'; A.Log.add(`Drehung gestoppt — ${res.reason}`, 'warn'); S.emit('loco', 'idle'); }
+      if (this.mode === 'shift') { this.mode = 'idle'; A.Log.add(`Rangieren gestoppt — ${res.reason}`, 'warn'); S.emit('loco', 'idle'); }
     },
     postUpdate() {
       if (this.mode === 'idle' && this.resumeAfterTurn) { const m = this.resumeAfterTurn; this.resumeAfterTurn = null; if (A.State.toggles.autonomous) this.setMode(m); }

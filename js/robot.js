@@ -227,6 +227,7 @@
       A.State.stats.checks++;
       const fail = (reason, ob, point, part) => ({ ok: false, reason, ob, point, part });
       const held = this.arm.held ? this.arm.held.ob : null;
+      if (held) { this.arm.wristR.updateWorldMatrix(true, false); this.syncHeld(); } // the load moves with every body/arm pose
       const hull = this.hullOBB();
       const droneDocked = A.DroneSys && A.DroneSys.state === 'docked';
 
@@ -268,6 +269,9 @@
       if (has('arm')) {
         const r = this.validateArm(hull, held);
         if (!r.ok) return r;
+      } else if (held) {
+        const s = this.loadSelfCheck(held, hull);
+        if (s) return fail(s.reason, null, s.point, 'load');
       }
       return { ok: true };
     }
@@ -284,6 +288,8 @@
         const o = W.sphereHit(_b, LC.rPad, held);
         if (o) return fail(`Fuß ${A.LN(l.id)} berührt ${o.name}`, o, _b.clone());
       }
+      const ph = W.padHit(p.pad, held); // whole pad disk incl. rim (the 5 points above miss diagonal edges)
+      if (ph) return fail(`Fuß ${A.LN(l.id)} berührt ${ph.ob.name}`, ph.ob, ph.point);
       if (p.pad.y < -0.005) return fail(`Fuß ${A.LN(l.id)} unter dem Boden`, 'floor', p.pad.clone());
       // tilted pad (manual ankle): no rim point may sink into the supporting surface
       for (const q of p.rim) {
@@ -314,11 +320,13 @@
     singleLegCheck(l) {
       if (l.ikFail) return { ok: false, reason: `Bein ${A.LN(l.id)}: ${l.ikFail}`, part: 'leg:' + l.id };
       const hull = this.hullOBB(), held = this.arm.held ? this.arm.held.ob : null;
+      if (held) { this.arm.wristR.updateWorldMatrix(true, false); this.syncHeld(); } // predicted pose (foothold planning)
       for (const x of this.legs) x.points();
       const r = this.legCheck(l, hull, held);
       if (r) return r;
       for (const [ia, ib] of C.adjacent) if (ia === l.id || ib === l.id) { const q = this.pairCheck(ia, ib); if (q) return q; }
       if (l.def.front === 1) { const q = this.validateArm(hull, held); if (!q.ok) return q; }
+      else if (held) { const s = this.loadSelfCheck(held, hull); if (s) return { ok: false, reason: s.reason, point: s.point, part: 'leg:' + l.id }; }
       return { ok: true };
     }
 
@@ -354,16 +362,40 @@
         }
       }
       if (held) {
-        const h = W.obbHit(held.obb, held._samples, held, 0);
-        if (h) return fail(`Last berührt ${h.ob.name}`, h.ob, h.point);
+        // exact box test; 3 mm overlap tolerated so a load can be set down on its support
+        const o = W.boxHit(held.obb, held, -0.003);
+        if (o) return fail(`Last berührt ${o.name}`, o, held.obb.c.clone());
         for (const c of held.obb.corners()) {
           const g = W.surfaceBelow(c.x, c.z, c.y + 0.01, held);
           if (c.y < g.y - 0.004) return fail('Last schlägt am Boden an', g.ob || 'floor', c);
-          if (hull.distance(c) < 0.02) return fail('Last kollidiert mit Chassis', null, c);
-          for (const l of this.legs) if (U.segSeg(l.pts.hip, l.pts.knee, c, c) < LC.rUpper + 0.02 || U.segSeg(l.pts.knee, l.pts.ankle, c, c) < LC.rLower + 0.02) return fail(`Last kollidiert mit Bein ${A.LN(l.id)}`, null, c);
         }
+        const s = this.loadSelfCheck(held, hull);
+        if (s) return fail(s.reason, null, s.point);
       }
       return { ok: true };
+    }
+    // carried load vs the robot's own links: every link sampled along its length (a long beam can cross a leg
+    // between its corners), chassis parts by exact box test
+    loadSelfCheck(held, hull) {
+      const o = held.obb, P = this.arm.points(), segs = [];
+      for (const l of this.legs) {
+        segs.push([l.pts.hip, l.pts.knee, LC.rUpper, `Bein ${A.LN(l.id)}`], [l.pts.knee, l.pts.ankle, LC.rLower, `Bein ${A.LN(l.id)}`]);
+      }
+      segs.push([P.shoulder, P.elbow, 0.07, 'Oberarm'], [P.elbow, P.wrist, 0.058, 'Unterarm']);
+      const mp = this.mastPoints(); segs.push([mp.base, mp.top, 0.07, 'Kameramast']);
+      const hc = this.headCenter(new V()); segs.push([hc, hc, 0.25, 'Sensorkopf']);
+      if (A.DroneSys && A.DroneSys.state === 'docked') { const dc = this.dockCenter(new V()); segs.push([dc, dc, 0.3, 'Drohne']); }
+      const R0 = o.h.length();
+      for (const [a, b, r, name] of segs) {
+        const len = a.distanceTo(b), n = Math.max(1, Math.ceil(len / (r * 0.6)));
+        if (U.segSeg(a, b, o.c, o.c) > R0 + r + 0.02) continue; // far from the load
+        for (let i = 0; i <= n; i++) {
+          _b.copy(a).lerp(b, i / n);
+          if (o.distance(_b) < r + 0.01) return { reason: `Last kollidiert mit ${name}`, point: _b.clone() };
+        }
+      }
+      for (const part of hull.parts) if (o.intersects(part.obb, 0.015)) return { reason: 'Last kollidiert mit Chassis', point: o.c.clone() };
+      return null;
     }
 
     // try a full pose; commit when valid, otherwise revert
@@ -413,6 +445,11 @@
       }
       next.gap = pw ? U.approach(a.gap, gt, arm.gapSpeed * dt) : a.gap;
       arm.contact = !!(arm.graspTarget && Math.abs(next.gap - gt) < 1e-4 && gt > t.gap + 1e-4);
+      // after an abort: drop the finger exception of the old object once the claw is fully open (never a new target)
+      if (arm.clearGraspOnOpen && (arm.held || a.gap >= C.arm.maxGap - 1e-3)) {
+        if (!arm.held && arm.graspTarget === arm.clearGraspOnOpen) arm.graspTarget = null;
+        arm.clearGraspOnOpen = null;
+      }
       const moved = Object.keys(next).some((k) => Math.abs(next[k] - a[k]) > 1e-7);
       if (moved) {
         const s = this.snapshot();

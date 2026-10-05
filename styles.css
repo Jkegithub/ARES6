@@ -76,14 +76,15 @@ button { font: inherit; }
 .scanlines { position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .018) 0 1px, transparent 1px 3px),
   radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, .55)); }
 #demo-strip { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; align-items: center; background: rgba(8, 11, 14, .78);
-  border: 1px solid var(--line2); padding: 4px; backdrop-filter: blur(4px); }
+  border: 1px solid var(--line2); padding: 4px; backdrop-filter: blur(4px); width: max-content; max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center; }
+#demo-strip button { white-space: nowrap; }
 #demo-strip .lbl { font: 700 9px var(--mono); color: var(--yellow); letter-spacing: 2px; padding: 0 6px; }
 #demo-strip button, #viewbtns button { background: #111920; border: 1px solid #2a3946; color: #dbe6ee; font: 600 10px var(--mono); letter-spacing: .6px; padding: 5px 9px; cursor: pointer; }
 #demo-strip button:hover, #viewbtns button:hover { border-color: var(--cyan); color: #fff; }
 #demo-strip button.on { border-color: var(--yellow); color: var(--yellow); }
-#viewbtns { position: absolute; top: 52px; right: 16px; display: flex; flex-direction: column; gap: 3px; }
+#viewbtns { position: absolute; top: var(--strip-b, 52px); right: 16px; display: flex; flex-direction: column; gap: 3px; }
 #viewbtns button.on { border-color: var(--cyan); color: var(--cyan); }
-#hud-readout { position: absolute; left: 18px; top: 48px; font: 10.5px/1.55 var(--mono); color: #9fb3c1; pointer-events: none; text-shadow: 0 0 4px #000; }
+#hud-readout { position: absolute; left: 18px; top: var(--strip-b, 48px); font: 10.5px/1.55 var(--mono); color: #9fb3c1; pointer-events: none; text-shadow: 0 0 4px #000; }
 #hud-readout b { color: var(--cyan); font-weight: 500; } #hud-readout .w { color: var(--yellow); } #hud-readout .r { color: var(--red); }
 #alert { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); background: rgba(70, 8, 8, .9); border: 1px solid var(--red);
   color: #fff; font: 600 11.5px var(--mono); padding: 6px 14px; letter-spacing: .5px; max-width: 70%; text-align: center; }

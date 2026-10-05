@@ -173,8 +173,10 @@
       const d = A.Env.debris.find((x) => !x.ob.held && x.ob.obb.c.distanceTo(gp) < 0.2);
       arm.target.gap = 0;
       if (!d) { A.Log.add('Greifer schließt (keine Last zwischen den Fingern)'); return; }
-      arm.graspTarget = d.ob;
+      if (d.mass > A.CFG.arm.payload) { arm.target.gap = A.CFG.arm.maxGap; A.Log.add(`${d.ob.name}: ${d.mass} kg über der Traglast (${A.CFG.arm.payload} kg) — Griff verweigert`, 'err'); return; }
       A.Missions.task('MANUELLER GRIFF', (function* () {
+        // set inside the task: starting it cancels a running task, whose cleanup must not clear this target
+        arm.graspTarget = d.ob; arm.clearGraspOnOpen = null; arm.target.gap = 0;
         const ok = yield* A.Tasks.until(() => arm.contact, 3);
         if (!ok) { arm.graspTarget = null; A.Log.add('Griff fehlgeschlagen — kein Kontakt', 'warn'); return; }
         arm.wristR.attach(d.mesh); arm.held = d; d.ob.held = true; arm.graspTarget = null; arm.target.gap = arm.angles.gap; robot.syncHeld();
@@ -185,7 +187,7 @@
       A.Tasks.cancel('reset');
       const arm = robot.arm;
       if (arm.held) { arm.held.mesh.parent && arm.held.mesh.parent.remove(arm.held.mesh); arm.held = null; }
-      arm.graspTarget = null;
+      arm.graspTarget = null; arm.clearGraspOnOpen = null;
       S.reset(); A.Log.clear(); A.Loco.reset();
       A.Env.spawnDebris(); A.Env.survivor.detected = false; A.Env.highlight(null);
       robot.reset(); A.DroneSys.reset(); A.Sensors.clearCloud(); A.Telemetry.reset(); A.Oracle.reset();
@@ -198,7 +200,7 @@
   };
 
   function boot() {
-    A.Log.add('ARES-6 initialisiert — Firmware 2.1 (kollisionssichere Fortbewegung)', 'ok');
+    A.Log.add('ARES-6 initialisiert — Firmware 2.2 (kollisionssichere Fortbewegung, Lastenhandling)', 'ok');
     A.Log.add(`Kollisionswelt aktiv — ${A.World.obstacles.length} Körper registriert`);
     const r = robot.validate();
     A.Log.add(r.ok ? 'Selbsttest bestanden — 6/6 Beine am Boden, keine Kollision' : `Selbsttest-Warnung: ${r.reason}`, r.ok ? 'ok' : 'warn');

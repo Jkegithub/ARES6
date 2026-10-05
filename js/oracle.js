@@ -28,6 +28,9 @@
       const tag = (obj, owner, n = 40) => obj.traverse((o) => { if (o.isMesh && o.geometry && o.material && o.material.visible !== false && !o.userData.fx) this.probes.push({ mesh: o, owner, pts: sub(o, n), pad: o.name === 'footPad' }); });
       R.legs.forEach((l) => tag(l.root, 'leg:' + l.id));
       tag(R.arm.root, 'arm', 30);
+      // claw meshes (palm, fingers) hold the load by design; upper arm and forearm do not
+      const clawSet = new Set(); R.arm.wristR.traverse((o) => clawSet.add(o));
+      for (const pr of this.probes) pr.claw = clawSet.has(pr.mesh);
       tag(R.chassis, 'body', 60);
       tag(R.headPitchJ, 'head', 30);
       tag(R.mast, 'mast', 20);
@@ -98,11 +101,28 @@
       const held = R.arm.held;
       if (held) {
         held.mesh.updateMatrixWorld();
-        const p = held.mesh.geometry.attributes.position;
-        for (let i = 0; i < p.count; i += 3) {
+        const p = held.mesh.geometry.attributes.position, hc = held.ob.obb.c, hr = held.ob.obb.h.length();
+        const near = obstacles.filter((o) => o.obb.c.distanceTo(hc) < o.radius + hr + 0.1);
+        const legMeshes = this.legSolids.flatMap((s) => s.meshes.map((m) => ({ id: s.id, m })));
+        let hit = false;
+        for (let i = 0; i < p.count && !hit; i += 3) {
           w.fromBufferAttribute(p, i).applyMatrix4(held.mesh.matrixWorld);
-          if (w.y < -TOL) { this.violation('floor', 'payload', 'floor', w); break; }
-          if (this.deep(this.chassis, w)) { this.violation('self', 'payload', 'chassis', w); break; }
+          this.checks++;
+          if (w.y < -TOL) { this.violation('floor', 'payload', 'floor', w); hit = true; break; }
+          if (this.deep(this.chassis, w)) { this.violation('self', 'payload', 'chassis', w); hit = true; break; }
+          for (const s of legMeshes) if (this.deep(s.m, w)) { this.violation('self', 'payload', 'leg:' + s.id, w); hit = true; break; }
+          if (!hit) for (const o of near) if (this.deep(o.mesh, w)) { this.violation('environment', 'payload', o.name, w); hit = true; break; }
+        }
+        // robot vertices inside the carried load (the claw holds it by design and is skipped)
+        if (!hit) for (const pr of this.probes) {
+          if (pr.claw) continue;
+          for (const lp of pr.pts) {
+            w.copy(lp).applyMatrix4(pr.mesh.matrixWorld);
+            if (w.distanceTo(hc) > hr + 0.3) continue;
+            this.checks++;
+            if (this.deep(held.mesh, w)) { this.violation('self', pr.owner, 'payload', w); hit = true; break; }
+          }
+          if (hit) break;
         }
       }
       // drone vs environment

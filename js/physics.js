@@ -44,6 +44,26 @@
       for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) o.push(this.toWorld(new V(sx * this.h.x, sy * this.h.y, sz * this.h.z), new V()));
       return o;
     }
+    axes() { return [new V(1, 0, 0).applyQuaternion(this.q), new V(0, 1, 0).applyQuaternion(this.q), new V(0, 0, 1).applyQuaternion(this.q)]; }
+    // exact box/box overlap (separating axis test, Ericson RTCD 4.4.1); m grows this box (negative m shrinks it)
+    intersects(b, m = 0) {
+      const ua = this.axes(), ub = b.axes();
+      const ea = [this.h.x + m, this.h.y + m, this.h.z + m], eb = [b.h.x, b.h.y, b.h.z];
+      const R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], AR = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { R[i][j] = ua[i].dot(ub[j]); AR[i][j] = Math.abs(R[i][j]) + 1e-7; }
+      const d = b.c.clone().sub(this.c), t = [d.dot(ua[0]), d.dot(ua[1]), d.dot(ua[2])];
+      for (let i = 0; i < 3; i++) if (Math.abs(t[i]) > ea[i] + eb[0] * AR[i][0] + eb[1] * AR[i][1] + eb[2] * AR[i][2]) return false;
+      for (let j = 0; j < 3; j++) if (Math.abs(t[0] * R[0][j] + t[1] * R[1][j] + t[2] * R[2][j]) > ea[0] * AR[0][j] + ea[1] * AR[1][j] + ea[2] * AR[2][j] + eb[j]) return false;
+      for (let i = 0; i < 3; i++) {
+        const i1 = (i + 1) % 3, i2 = (i + 2) % 3;
+        for (let j = 0; j < 3; j++) {
+          const j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+          const ra = ea[i1] * AR[i2][j] + ea[i2] * AR[i1][j], rb = eb[j1] * AR[i][j2] + eb[j2] * AR[i][j1];
+          if (Math.abs(t[i2] * R[i1][j] - t[i1] * R[i2][j]) > ra + rb) return false;
+        }
+      }
+      return true;
+    }
     // ray/box slab test → [tEnter, tExit] or null
     slab(o, d) {
       const lo = this.toLocal(o, _l).clone();
@@ -201,6 +221,34 @@
           if (obb.distance(p) <= margin) return { ob: o, point: p.clone() };
         }
       }
+      return null;
+    },
+    // foot pad (disk r 0.1 + rim 0.01, 36 mm high) standing at contact point c: any obstacle reaching into it?
+    // Yaw-only boxes exactly (footprint distance + height overlap above the contact plane), ramps by the surface
+    // check of the caller, tilted boxes by a dense rim sampling.
+    padHit(c, ex, R = 0.11, H = 0.036) {
+      const p = new V();
+      for (const o of this.near(c, R + 0.05, ex)) {
+        if (o.ramp) continue;
+        if (o.flat) {
+          if (o.bottom >= c.y + H || o.top <= c.y + 0.004) continue;
+          const l = o.obb.toLocal(p.set(c.x, o.obb.c.y, c.z), _l);
+          const dx = Math.max(Math.abs(l.x) - o.obb.h.x, 0), dz = Math.max(Math.abs(l.z) - o.obb.h.z, 0);
+          if (dx * dx + dz * dz < R * R) return { ob: o, point: o.obb.closest(p.set(c.x, c.y + H / 2, c.z), new V()) };
+        } else {
+          if (o.distance(p.set(c.x, c.y + 0.02, c.z)) < 0.016) return { ob: o, point: p.clone() };
+          for (let i = 0; i < 24; i++) for (const rr of [0.06, R - 0.006]) for (const dy of [0.012, 0.028]) {
+            const a = (i / 24) * Math.PI * 2;
+            p.set(c.x + Math.cos(a) * rr, c.y + dy, c.z + Math.sin(a) * rr);
+            if (o.distance(p) < 0.008) return { ob: o, point: p.clone() };
+          }
+        }
+      }
+      return null;
+    },
+    // exact box test against the world (carried loads); m < 0 tolerates resting contact
+    boxHit(obb, ex, m = 0) {
+      for (const o of this.near(obb.c, obb.h.length() + Math.max(m, 0), ex)) if (obb.intersects(o.obb, m)) return o;
       return null;
     },
     raycast(o, d, maxD = 30, ex = null, floor = true) {

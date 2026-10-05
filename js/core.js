@@ -32,7 +32,7 @@
       { id: 'RR', name: 'Hinten rechts', mount: [-0.55, -0.02, 0.47], yaw: -125 * D, yawLim: [-26, 42], group: 1, front: -1, side: 1 },
     ],
     adjacent: [['FL', 'ML'], ['ML', 'RL'], ['FR', 'MR'], ['MR', 'RR']],
-    arm: { mount: [0.92, -0.04, 0], L1: 0.62, L2: 0.55, palm: 0.07, finger: 0.18, maxGap: 0.42 },
+    arm: { mount: [0.92, -0.04, 0], L1: 0.62, L2: 0.55, palm: 0.07, finger: 0.18, maxGap: 0.42, payload: 150 },
     head: { pos: [0.48, 0.15, 0], r: 0.21 },
     mast: { pos: [0.05, 0.15, -0.26], seg: 0.25, max: 1.2 },
     dock: { pos: [-0.42, 0.15, 0.12] },

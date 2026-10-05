@@ -166,6 +166,50 @@
       A.Missions.reboot(); runTask(20); sim(3);
       return [!pw && h < 0.35 && S.powered && R().pose.h > 0.55, `off: powered=${pw}, h=${h.toFixed(2)}; after reboot powered=${S.powered}, h=${R().pose.h.toFixed(2)}`];
     });
+    scenario('Beam stacking demo', 'Three 2.4 m beams cleared onto the timbers: parallel ±3°, offset < 5 cm, layers resting, arm stowed', () => {
+      A.Missions.beams(); const t = runTask(900);
+      const s = A.Missions.stackReport(), arm = R().arm.angles;
+      const stowed = Math.abs(arm.shoulder / A.DEG - 80) < 2 && Math.abs(arm.elbow / A.DEG + 150) < 2;
+      return [s.n === 3 && s.off < 0.05 && s.ang < 3 * A.DEG && s.gap < 0.005 && !R().arm.held && stowed,
+        `stack n=${s.n}, offset max ${(s.off * 100).toFixed(1)} cm, angle max ${(s.ang / A.DEG).toFixed(1)}°, layer gap max ${(s.gap * 1000).toFixed(0)} mm, arm stowed=${stowed}, ${t.toFixed(0)} s`];
+    });
+    scenario('Rack demo', 'Parcel from pallet into the free middle slot; another one out of the rack onto the pallet', () => {
+      A.Missions.rack(); const t = runTask(400);
+      const RK = A.Env.RACK, P = A.Env.PALLET, p1 = A.Env.load('Paket P1'), p2 = A.Env.load('Paket P2');
+      const c2 = p2.ob.obb.c, xw = RK.x - 0.725;
+      const inSlot = Math.abs(p2.ob.bottom - (RK.levels[1] + 0.025)) < 0.005 && Math.abs(c2.x - xw) < 0.06 && c2.z > RK.z - 0.45 && c2.z < RK.z + 0.45 && p2.ob.top < RK.levels[2] - 0.025;
+      const onPallet = Math.abs(p1.ob.bottom - P.h) < 0.005 && Math.abs(p1.ob.obb.c.x - P.x) < 0.4 && Math.abs(p1.ob.obb.c.z - P.z) < 0.6;
+      return [inSlot && onPallet && !R().arm.held, `P2 at (${c2.x.toFixed(2)}, ${p2.ob.bottom.toFixed(3)}, ${c2.z.toFixed(2)}) in slot=${inSlot}; P1 bottom ${p1.ob.bottom.toFixed(3)} on pallet=${onPallet}; ${t.toFixed(0)} s`];
+    });
+    scenario('Payload limit', 'A load above the arm payload is refused before gripping', () => {
+      const b = A.Env.debris.find((d) => d.type === 'beam'); b.mass = A.CFG.arm.payload + 50;
+      A.Missions.beams(); runTask(120);
+      const log = A.Log.entries.map((e) => e.msg).join('|');
+      return [/über der Traglast/.test(log) && !R().arm.held && !/Fingerkontakt/.test(log), `mass ${b.mass} kg > ${A.CFG.arm.payload} kg → refused, held=${!!R().arm.held}`];
+    });
+    scenario('Long load vs legs', 'A carried beam crossing a leg between its corners is rejected (validator samples along each link)', () => {
+      const r = R(), arm = r.arm, V = THREE.Vector3;
+      const b = A.Env.debris.find((d) => d.type === 'beam');
+      arm.wristR.attach(b.mesh); b.mesh.position.set(0.18 + b.ob.obb.h.y - 0.02, 0, 0); b.mesh.rotation.set(0, 0, Math.PI / 2);
+      arm.held = b; b.ob.held = true;
+      r.root.updateMatrixWorld(true);
+      const sh = arm.root.localToWorld(new V()), res = [];
+      for (const psi of [0, -35]) { // straight ahead: clear; −35°: the beam lies across the front leg
+        const wy = r.pose.yaw + psi * A.DEG, p = new V(sh.x + Math.cos(wy) * 1.0, 0.5, sh.z - Math.sin(wy) * 1.0);
+        const ik = arm.solveDown(p, -90 * A.DEG); arm.apply(ik.a); r.root.updateMatrixWorld(true);
+        res.push(r.validate(['arm']));
+      }
+      return [res[0].ok && !res[1].ok && /Bein/.test(res[1].reason), `ahead: ${res[0].ok ? 'ok' : res[0].reason}; at −35°: ${res[1].ok ? 'ok' : res[1].reason}`];
+    });
+    scenario('Foot pad rim', 'An edge reaching diagonally into the pad (between the old 4 test points) is detected', () => {
+      const t = A.World.obstacles.find((o) => o.name === 'Kantholz'), c = t.obb.corners()[0];
+      // pad centre 7.5 cm diagonally off a timber corner at floor level: rim (r 0.1–0.11) overlaps, the 4 axis points do not
+      const dx = Math.sign(c.x - t.obb.c.x), dz = Math.sign(c.z - t.obb.c.z);
+      const pad = new THREE.Vector3(c.x + dx * 0.053, 0, c.z + dz * 0.053);
+      const old = [[0, 0], [0.1, 0], [-0.1, 0], [0, 0.1], [0, -0.1]].some(([x, z]) => A.World.sphereHit(new THREE.Vector3(pad.x + x, 0.02, pad.z + z), A.CFG.leg.rPad));
+      const hit = A.World.padHit(pad);
+      return [!!hit && !old, `old 4-point check: ${old ? 'hit' : 'missed'}, pad disk check: ${hit ? 'hit ' + hit.ob.name : 'missed'}`];
+    });
     scenario('Telemetry', 'Updates live', () => {
       const a = { ...S.tele }; click('[data-demo="walk"]'); sim(5);
       const b = S.tele;

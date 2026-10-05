@@ -178,6 +178,327 @@
     return true;
   }
 
+  // ------------------------------------------------------------------ load handling building blocks (beams, parcels)
+  // claw move along a straight line, wrist roll interpolated; mode 'down' = claw vertical, 'front' = claw level
+  function* clawPath(to, roll, mode = 'down', speed = 0.3, stopFn = null, step = 0.02) {
+    const arm = R.arm, from = arm.points().grasp.clone(), r0 = arm.target.wristRoll;
+    const n = Math.max(1, Math.ceil(Math.max(from.distanceTo(to) / step, Math.abs(roll - r0) / (2 * D))));
+    for (let i = 1; i <= n; i++) {
+      const p = from.clone().lerp(to, i / n), rr = r0 + ((roll - r0) * i) / n;
+      R.root.updateMatrixWorld(true);
+      const ik = mode === 'front' ? arm.solveFront(p, rr) : arm.solveDown(p, rr);
+      if (!ik.ok) { L.add(`Arm-IK: ${ik.why}`, 'warn'); return false; }
+      Object.assign(arm.target, ik.a);
+      const ok = yield* T.until(() => arm.reached(0.01) || arm.blocked, 0.02 / speed + 1.2);
+      if (arm.blocked) { L.add(`Arm gestoppt — ${arm.blockReason}`, 'warn'); return false; }
+      if (!ok) { L.add('Arm erreicht Bahnpunkt nicht (Zeitüberschreitung)', 'warn'); return false; }
+      if (stopFn && stopFn()) return true;
+    }
+    return true;
+  }
+  // joint-space move to a claw pose (e.g. out of the stowed arm, where a straight claw line is not defined)
+  function* armTo(p, roll, mode = 'down', timeout = 8) {
+    const arm = R.arm;
+    R.root.updateMatrixWorld(true);
+    const ik = mode === 'front' ? arm.solveFront(p, roll) : arm.solveDown(p, roll);
+    if (!ik.ok) { L.add(`Arm-IK: ${ik.why}`, 'warn'); return false; }
+    Object.assign(arm.target, ik.a);
+    yield* T.until(() => arm.reached(0.01) || arm.blocked, timeout);
+    if (arm.blocked) { L.add(`Arm gestoppt — ${arm.blockReason}`, 'warn'); return false; }
+    return arm.reached(0.01);
+  }
+  // wrist roll that turns a gripped long load to world angle `axis` (claw down: load axis = arm yaw − roll), nearest to now
+  function rollFor(p, axis) {
+    R.root.updateMatrixWorld(true);
+    const ik = R.arm.solveDown(p), aw = R.pose.yaw + ik.a.yaw, cur = R.arm.target.wristRoll;
+    let r = U.wrap(aw - axis);
+    for (const c of [r - Math.PI, r + Math.PI]) if (Math.abs(c) <= Math.PI && Math.abs(c - cur) < Math.abs(r - cur)) r = c;
+    return r;
+  }
+  const fwd = (yaw) => new V(Math.cos(yaw), 0, -Math.sin(yaw));
+  const shoulder = () => { R.root.updateMatrixWorld(true); return R.arm.root.localToWorld(new V()); };
+  function attachLoad(d) {
+    const arm = R.arm;
+    arm.wristR.attach(d.mesh); arm.held = d; d.ob.held = true; arm.graspTarget = null; arm.target.gap = arm.angles.gap;
+    R.syncHeld();
+  }
+  function* closeOn(d) {
+    const arm = R.arm;
+    arm.target.gap = 0;
+    yield* T.until(() => arm.contact, 4);
+    if (!arm.contact) { L.add(`Griff an ${d.ob.name} fehlgeschlagen — kein Fingerkontakt`, 'err'); arm.graspTarget = null; arm.target.gap = C.arm.maxGap; return false; }
+    L.add(`Fingerkontakt an ${d.ob.name} — Backenabstand ${(arm.angles.gap * 100).toFixed(1)} cm, Last ${d.mass} kg von ${C.arm.payload} kg`, 'ok');
+    attachLoad(d);
+    return true;
+  }
+  function payloadOk(d) {
+    if (d.mass <= C.arm.payload) return true;
+    L.add(`${d.ob.name}: ${d.mass} kg über der Traglast (${C.arm.payload} kg) — Griff verweigert`, 'err');
+    return false;
+  }
+  // stand at `p` facing `yaw`; the along-track error is removed by a straight manoeuvre (lateral error stays, logged)
+  // a navigation that ends with a leg wound up at its hip-yaw limit (tight curves in the high pose) is resumed:
+  // stop, let the legs re-step to neutral, plan again
+  function* goToRetry(p, yaw, label) {
+    for (let k = 0; k < 3; k++) {
+      if (yield* goTo(p, yaw, label)) return true;
+      if (k < 2) {
+        L.add(`${label}: Anfahrt wird neu aufgenommen — Beine neu aufsetzen (${k + 1}/2)`, 'info');
+        A.Loco.stop();
+        for (const l of R.legs) l.settleFail = false;
+        yield* settle(5);
+      }
+    }
+    return false;
+  }
+  function* turnToRetry(yaw, tol = 2 * D) {
+    for (let k = 0; k < 3; k++) {
+      yield* turnTo(yaw);
+      if (Math.abs(U.wrap(R.pose.yaw - yaw)) <= tol) return true;
+      A.Loco.stop(); for (const l of R.legs) l.settleFail = false;
+      yield* settle(5);
+    }
+    L.add(`Kurs ${(U.wrap(yaw) / D).toFixed(0)}° nicht erreicht`, 'warn');
+    return false;
+  }
+  // travel in the high pose (narrower footprint: the planner finds the yard access), work in the zero pose
+  function* standAt(p, yaw, label) {
+    if (Math.hypot(R.pose.x - p.x, R.pose.z - p.z) > 0.12 || Math.abs(U.wrap(R.pose.yaw - yaw)) > 2 * D) {
+      if (Math.hypot(R.pose.x - p.x, R.pose.z - p.z) > 0.6) { setPose('high'); yield* settle(5); }
+      // into the yard through the gap between ramp and rack AS, keeping off the rack corner
+      const G = A.Env.YARD_GATE;
+      if (p.z > G.z && R.pose.z < G.z - 0.5 && R.pose.x > -3) { if (!(yield* goToRetry(G, null, 'Hofzufahrt'))) return false; }
+      if (!(yield* goToRetry(p, yaw, label))) return false;
+    }
+    if (S.cmd.bodyHeight !== C.poses.zero.h) { setPose('zero'); yield* settle(5); }
+    // lateral error (the planner may stop short of a goal that lies close to obstacles): face the point, move, face back
+    const f0 = fwd(yaw), lat0 = (p.x - R.pose.x) * -f0.z + (p.z - R.pose.z) * f0.x;
+    if (Math.abs(lat0) > 0.05) {
+      const dx = p.x - R.pose.x, dz = p.z - R.pose.z, dist = Math.hypot(dx, dz);
+      let hd = Math.atan2(-dz, dx), dir = 1;
+      if (Math.abs(U.wrap(hd - R.pose.yaw)) > Math.PI / 2) { hd = U.wrap(hd + Math.PI); dir = -1; } // back up rather than turn round
+      if (!(yield* turnToRetry(hd))) return false;
+      A.Loco.setMode('shift', { dist: dir * dist });
+      yield* T.until(() => A.Loco.mode !== 'shift', 15); if (A.Loco.mode === 'shift') A.Loco.stop('Rangieren: Zeitüberschreitung');
+      yield* settle(3);
+    }
+    if (Math.abs(U.wrap(R.pose.yaw - yaw)) > 1.5 * D && !(yield* turnToRetry(yaw))) return false;
+    const f = fwd(yaw), e = (p.x - R.pose.x) * f.x + (p.z - R.pose.z) * f.z;
+    if (Math.abs(e) > 0.012) {
+      A.Loco.setMode('shift', { dist: e });
+      yield* T.until(() => A.Loco.mode !== 'shift', 12); if (A.Loco.mode === 'shift') A.Loco.stop('Rangieren: Zeitüberschreitung');
+      yield* settle(3);
+    }
+    const lat = (p.x - R.pose.x) * -f.z + (p.z - R.pose.z) * f.x;
+    L.add(`${label}: Standpunkt erreicht — Längsfehler ${(Math.abs((p.x - R.pose.x) * f.x + (p.z - R.pose.z) * f.z) * 100).toFixed(1)} cm, Querfehler ${(Math.abs(lat) * 100).toFixed(1)} cm`);
+    return true;
+  }
+  function* stow() {
+    stowArm(); R.arm.target.gap = 0.06;
+    yield* T.until(() => R.arm.reached(0.02) || R.arm.blocked, 6);
+  }
+  // release onto the support and back the claw off along `away` (fingers may slide along the load meanwhile)
+  function* letGo(d, away, mode, roll) {
+    releasePayload();
+    R.arm.graspTarget = d.ob; R.arm.target.gap = C.arm.maxGap;
+    yield 0.6;
+    // as far as reachable (on a high stack the full lift is out of reach), at least until the fingers are clear
+    const g0 = R.arm.points().grasp.clone();
+    let back = null;
+    for (const k of [1, 0.66, 0.4]) {
+      const b = g0.clone().addScaledVector(away, k);
+      R.root.updateMatrixWorld(true);
+      if ((mode === 'front' ? R.arm.solveFront(b, roll) : R.arm.solveDown(b, roll)).ok) { back = b; break; }
+    }
+    if (back) yield* clawPath(back, roll, mode, 0.3);
+    R.arm.graspTarget = null;
+    // pull the claw in towards the body at this height before the joint-space stow
+    if (mode === 'down') {
+      const sh = shoulder(), cur = R.arm.points().grasp, dir = cur.clone().sub(sh); dir.y = 0; dir.normalize();
+      const inner = sh.clone().addScaledVector(dir, 0.6); inner.y = cur.y;
+      yield* clawPath(inner, roll, mode, 0.3);
+    }
+  }
+  const bottomOf = (d) => d.ob.obb.c.y - d.ob.obb.h.y;
+  // lowest corner (a carried beam hangs slightly tilted within the joint tolerance) close to its support
+  const touching = (d) => () => d.ob.bottom - A.Env.debrisSupport(d) < 0.008;
+  // the lowering path may end early (stop on contact, or validator block just above the support): release only
+  // when the measured gap is small, otherwise keep holding and report
+  function* confirmRest(d, label) {
+    yield 0.3; // let the arm finish the last waypoint
+    const gap = d.ob.bottom - A.Env.debrisSupport(d);
+    if (gap > 0.012) { L.add(`${d.ob.name}: Absetzen ${label} unterbrochen — ${(gap * 100).toFixed(1)} cm über der Auflage, Last wird gehalten`, 'err'); return false; }
+    L.add(`${d.ob.name} ${label} abgesetzt — Auflage bestätigt (Spalt ${(Math.max(gap, 0) * 1000).toFixed(0)} mm)`, 'ok');
+    return true;
+  }
+
+  // ------------------------------------------------------------------ demo: clear the beams and stack them on the timbers
+  // The 2.4 m beam cannot be swung past the front legs by the arm alone (measured), so ARES-6 grips it in front of
+  // the body and turns on the spot (no walking with load); the stack lies behind the stand point.
+  function stackState() {
+    const ST = A.Env.STACK, on = A.Env.debris.filter((d) => d.type === 'beam' && !d.ob.held && d.ob.footprint(ST.x, ST.z, 0.2) && bottomOf(d) > 0.05);
+    on.sort((a, b) => a.ob.obb.c.y - b.ob.obb.c.y);
+    return on;
+  }
+  function stackReport() {
+    const ST = A.Env.STACK, on = stackState();
+    let off = 0, ang = 0, gap = 0;
+    on.forEach((d, i) => {
+      off = Math.max(off, Math.hypot(d.ob.obb.c.x - ST.x, d.ob.obb.c.z - ST.z));
+      let a = Math.abs(U.wrap(d.ob.yaw() - Math.PI / 2)); if (a > Math.PI / 2) a = Math.PI - a;
+      ang = Math.max(ang, a);
+      const below = i === 0 ? ST.timber : on[i - 1].ob.top;
+      gap = Math.max(gap, Math.abs(bottomOf(d) - below));
+    });
+    return { n: on.length, off, ang, gap };
+  }
+  function* beamOne(d) {
+    const arm = R.arm, ST = A.Env.STACK, { P, th, face } = d.stand;
+    if (!payloadOk(d)) return false;
+    T.step('Anfahrt');
+    A.Env.highlight('beams');
+    lookAt(d.ob.obb.c);
+    if (!(yield* standAt(P, th, d.ob.name))) return false;
+    // grip from above at the centre of gravity, jaws across the flange
+    T.step('Greifen');
+    const c = d.ob.obb.c.clone(), top = d.ob.top;
+    lookAt(c);
+    arm.target.gap = C.arm.maxGap;
+    const pre = c.clone(); pre.y = Math.max(top + 0.35, 0.75);
+    const roll = rollFor(pre, d.ob.yaw());
+    if (!(yield* armTo(pre, roll))) return false;
+    arm.graspTarget = d.ob;
+    const g = c.clone(); g.y = top - 0.02;
+    if (!(yield* clawPath(g, roll, 'down', 0.22))) { arm.graspTarget = null; return false; }
+    if (!(yield* closeOn(d))) return false;
+    // lift above everything on the ground and the stack, turn the beam across the body for carrying
+    T.step('Anheben');
+    const carryY = Math.max(0.75, (stackState().reduce((m, e) => Math.max(m, e.ob.top), ST.timber)) + 0.28);
+    const up = arm.points().grasp.clone(); up.y = carryY;
+    if (!(yield* clawPath(up, arm.target.wristRoll, 'down', 0.25))) return false;
+    const sh = shoulder(), carry = sh.clone().addScaledVector(fwd(R.pose.yaw), 0.95); carry.y = carryY;
+    if (!(yield* clawPath(carry, rollFor(carry, R.pose.yaw + Math.PI / 2), 'down', 0.25))) return false;
+    // turn on the spot to face the stack
+    T.step('Wenden');
+    L.add(`${d.ob.name} angehoben (${d.mass} kg) — Drehung auf der Stelle zum Stapelplatz`);
+    yield* turnToRetry(face, 3 * D);
+    if (Math.abs(U.wrap(R.pose.yaw - face)) > 3 * D) { L.add('Wendung nicht abgeschlossen — Last wird gehalten', 'warn'); return false; }
+    // set down on the stack: parallel to the timbers' normal (beam along z), centred on the stack
+    T.step('Absetzen');
+    const sup = stackState().reduce((m, e) => Math.max(m, e.ob.top), ST.timber);
+    const off = arm.points().grasp.clone().sub(d.ob.obb.c); // grasp point relative to the load centre
+    const slot = new V(ST.x, sup + d.ob.obb.h.y, ST.z);
+    const above = slot.clone().add(off); above.y = Math.max(carryY, slot.y + off.y + 0.15);
+    const pr = rollFor(above, Math.PI / 2);
+    if (!(yield* clawPath(above, pr, 'down', 0.25))) return false;
+    const down = slot.clone().add(off); down.y += 0.004;
+    yield* clawPath(down, pr, 'down', 0.15, touching(d), 0.005);
+    if (!(yield* confirmRest(d, 'auf dem Stapel'))) return false;
+    T.step('Loslassen');
+    yield* letGo(d, new V(0, 0.3, 0), 'down', pr);
+    d.ob.avoid = true; // planner walks round the stack (a lying beam may be stepped over, the stack not)
+    yield* stow();
+    return true;
+  }
+  function* beamDemo() {
+    const arm = R.arm;
+    if (arm.held) { L.add('Greifer hält bereits eine Last — erst loslassen', 'warn'); return; }
+    L.add('Trägerräumung — drei Stahlträger kreuz und quer im Hof, Ziel: Stapel auf den Kanthölzern', 'info');
+    for (const d of A.Env.debris.filter((x) => x.type === 'beam')) {
+      if (stackState().includes(d)) continue;
+      if (!(yield* beamOne(d))) { L.add(`Trägerräumung angehalten bei ${d.ob.name}`, 'err'); return; }
+    }
+    T.step('Prüfen');
+    const s = stackReport();
+    S.stackCheck = s;
+    L.add(`Stapel geprüft — ${s.n} Träger, Versatz max ${(s.off * 100).toFixed(1)} cm, Winkelabweichung max ${(s.ang / D).toFixed(1)}°, Auflagespalt max ${(s.gap * 1000).toFixed(0)} mm`, s.n === 3 && s.off < 0.05 && s.ang < 3 * D ? 'ok' : 'warn');
+    L.add('Trägerräumung abgeschlossen — Zufahrt frei', 'ok');
+  }
+
+  // ------------------------------------------------------------------ demo: rack BS — put a parcel away and take one out
+  // Front grip with a level claw. Stand point in front of the west compartment; the pallet lies to the right.
+  function rackStand() { const RK = A.Env.RACK, P = A.Env.PALLET; return new V(RK.x - 0.725, 0, P.z); }
+  // parcel centre → claw grasp point for a front grip from direction `dir` (fingers 3 cm behind the near face)
+  const frontGrasp = (c, half, dir) => c.clone().addScaledVector(dir, -(half - 0.03));
+  function* frontPick(d, dir) {
+    const arm = R.arm, g = frontGrasp(d.ob.obb.c, frontDepth(d, dir), dir);
+    arm.target.gap = C.arm.maxGap;
+    const pre = g.clone().addScaledVector(dir, -0.28);
+    lookAt(d.ob.obb.c);
+    if (!(yield* armTo(pre, 0, 'front'))) return false;
+    arm.graspTarget = d.ob;
+    if (!(yield* clawPath(g, 0, 'front', 0.15))) { arm.graspTarget = null; return false; }
+    return yield* closeOn(d);
+  }
+  function* frontPlace(d, centre, dir, label) {
+    const arm = R.arm;
+    const off = arm.points().grasp.clone().sub(d.ob.obb.c);
+    const outside = centre.clone().addScaledVector(dir, -0.45).add(off); outside.y += 0.03;
+    const inside = centre.clone().add(off); inside.y += 0.03;
+    if (!(yield* clawPath(outside, 0, 'front', 0.25))) return false;
+    if (!(yield* clawPath(inside, 0, 'front', 0.15))) return false;
+    const down = inside.clone(); down.y -= 0.03 - 0.004;
+    yield* clawPath(down, 0, 'front', 0.1, touching(d), 0.005);
+    if (!(yield* confirmRest(d, label))) return false;
+    yield* letGo(d, dir.clone().multiplyScalar(-0.3), 'front', 0);
+    return true;
+  }
+  function* rackDemo() {
+    const arm = R.arm, RK = A.Env.RACK, P = A.Env.PALLET;
+    if (arm.held) { L.add('Greifer hält bereits eine Last — erst loslassen', 'warn'); return; }
+    const p2 = A.Env.load('Paket P2'), p1 = A.Env.load('Paket P1');
+    const home = p1 && p2 && Math.abs(p2.ob.bottom - P.h) < 0.01 && Math.hypot(p2.ob.obb.c.x - P.x, p2.ob.obb.c.z - P.z) < 0.1
+      && Math.abs(p1.ob.bottom - (RK.levels[0] + 0.025)) < 0.01;
+    if (!home) { L.add('Pakete P1/P2 nicht am Ausgangsort (P2 auf der Palette, P1 im unteren Fach) — Simulation zurücksetzen', 'warn'); return; }
+    A.Env.highlight('rack');
+    L.add('Regal-Demo — P2 von der Palette einlagern, P1 aus dem Regal auslagern und seitlich ablegen', 'info');
+    const east = 0, north = Math.PI / 2, st = rackStand();
+    // 1 · take P2 from the pallet (robot faces east)
+    T.step('Anfahrt');
+    if (!(yield* standAt(st, east, 'Regal BS'))) return;
+    T.step('Palette greifen');
+    if (!payloadOk(p2) || !(yield* frontPick(p2, fwd(east)))) return;
+    const lift = arm.points().grasp.clone(); lift.y = 0.65;
+    if (!(yield* clawPath(lift, 0, 'front', 0.2))) return;
+    // carried close to the body while turning: the parcel must not sweep into the rack
+    const near = shoulder().addScaledVector(fwd(east), 0.55); near.y = 0.65;
+    if (!(yield* clawPath(near, 0, 'front', 0.25))) return;
+    // 2 · turn to the rack, put P2 into the free middle slot of the west compartment
+    T.step('Zum Regal');
+    if (!(yield* turnToRetry(north))) return;
+    T.step('Einlagern');
+    const fz = RK.z + 0.4, top1 = RK.levels[1] + 0.025;
+    const slot = new V(RK.x - 0.725, top1 + p2.ob.obb.h.y, fz - frontDepth(p2, fwd(north)));
+    lookAt(slot);
+    if (!(yield* frontPlace(p2, slot, fwd(north), 'im Regal (Mitte)'))) return;
+    // 3 · take P1 out of the lower level
+    T.step('Auslagern');
+    if (!payloadOk(p1) || !(yield* frontPick(p1, fwd(north)))) return;
+    const up1 = arm.points().grasp.clone(); up1.y += 0.015;
+    if (!(yield* clawPath(up1, 0, 'front', 0.1))) return;
+    const out1 = up1.clone().addScaledVector(fwd(north), -0.5);
+    if (!(yield* clawPath(out1, 0, 'front', 0.15))) return;
+    const hi1 = out1.clone(); hi1.y = 0.65;
+    if (!(yield* clawPath(hi1, 0, 'front', 0.2))) return;
+    // 4 · turn to the pallet and set P1 down beside the rack
+    T.step('Zur Palette');
+    if (!(yield* turnToRetry(east))) return;
+    T.step('Ablegen');
+    const pc = new V(P.x, P.h + p1.ob.obb.h.y, P.z);
+    if (!(yield* frontPlace(p1, pc, fwd(east), 'auf der Palette'))) return;
+    yield* stow();
+    T.step('Prüfen');
+    const inRack = Math.abs(p2.ob.obb.c.z - (fz - frontDepth(p2, fwd(north)))) < 0.05 && Math.abs(bottomOf(p2) - top1) < 0.01 && Math.abs(p2.ob.obb.c.x - (RK.x - 0.725)) < 0.06;
+    const onPallet = Math.abs(bottomOf(p1) - P.h) < 0.01 && Math.abs(p1.ob.obb.c.x - P.x) < 0.25 && Math.abs(p1.ob.obb.c.z - P.z) < 0.35;
+    S.rackCheck = { inRack, onPallet };
+    L.add(`Regal-Demo abgeschlossen — P2 im Fach: ${inRack ? 'ja' : 'NEIN'}, P1 auf der Palette: ${onPallet ? 'ja' : 'NEIN'}`, inRack && onPallet ? 'ok' : 'warn');
+  }
+  // half depth of a parcel along the approach direction
+  function frontDepth(d, dir) {
+    const ax = d.ob.obb.axes();
+    return Math.abs(ax[0].dot(dir)) * d.ob.obb.h.x + Math.abs(ax[2].dot(dir)) * d.ob.obb.h.z;
+  }
+
   // ------------------------------------------------------------------ survivor scan
   function* survivorScan() {
     T.step('Schwenk');
@@ -278,6 +599,14 @@
     L.add(ok2 ? 'Kletterparcours bewältigt — Füße ans Gelände angepasst, Körper an der Stützebene ausgerichtet' : 'Klettern von Sicherheitsprüfung gestoppt', ok2 ? 'ok' : 'warn');
   }
 
+  // task aborted (operator, or superseded by a new task): stop walking; an empty claw opens and keeps its finger
+  // exception for the object between the fingers until it is fully open (so it can slide off instead of jamming)
+  function abortCleanup() {
+    A.Loco.stop();
+    const arm = R.arm;
+    if (!arm.held && arm.graspTarget) { arm.target.gap = C.arm.maxGap; arm.clearGraspOnOpen = arm.graspTarget; }
+  }
+
   // ------------------------------------------------------------------ missions
   const MISSIONS = {
     tunnel: {
@@ -339,13 +668,16 @@
       if (!S.powered) return A.feedback('Roboter abgeschaltet — zuerst neu starten', 'warn');
       S.mission = { id, name: m.name, zone: S.mission.zone };
       S.emit('mission');
-      T.start(m.name, m.gen(), { steps: m.steps, onCancel: () => { A.Loco.stop(); } });
+      T.start(m.name, m.gen(), { steps: m.steps, onCancel: abortCleanup });
     },
     task(name, gen, steps) {
       if (!S.powered && name !== 'NEUSTART') return A.feedback('Roboter abgeschaltet — zuerst neu starten', 'warn');
-      T.start(name, gen, { steps, onCancel: () => A.Loco.stop() });
+      T.start(name, gen, { steps, onCancel: abortCleanup });
     },
     grab() { this.task('GREIF-DEMO', grabDemo(), MISSIONS.debris.steps); },
+    beams() { this.task('TRÄGERRÄUMUNG', beamDemo(), ['Anfahrt', 'Greifen', 'Anheben', 'Wenden', 'Absetzen', 'Loslassen', 'Prüfen']); },
+    rack() { this.task('REGAL-DEMO', rackDemo(), ['Anfahrt', 'Palette greifen', 'Zum Regal', 'Einlagern', 'Auslagern', 'Zur Palette', 'Ablegen', 'Prüfen']); },
+    stackReport,
     release() { if (releasePayload()) { R.arm.target.gap = C.arm.maxGap; } else A.feedback('Greifer ist leer'); },
     scan() { this.task('ÜBERLEBENDEN-SCAN', survivorScan(), ['Schwenk', 'Auswertung']); },
     mark: markTarget,

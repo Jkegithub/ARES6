@@ -9,7 +9,7 @@
   const MODE_DE = { MANUAL: 'MANUELL', AUTONOMOUS: 'AUTONOM', FAULT: 'FEHLER', SHUTDOWN: 'ABGESCHALTET', BOOTING: 'STARTET' };
   const LEG_ST_DE = { grounded: 'steht', lifting: 'hebt', moving: 'schwingt', error: 'Fehler', idle: 'Ruhe' };
   const DRONE_DE = { docked: 'ANGEDOCKT', launch: 'STEIGT', orbit: 'ORBIT', return: 'RÜCKFLUG', land: 'LANDET', emergency: 'NOTLANDUNG', grounded: 'GELANDET' };
-  const LOCO_DE = { idle: 'STEHT', walk: 'LAUFEN', crawl: 'KRIECHEN', rotate: 'DREHEN', turnTo: 'WENDEN', nav: 'NAVIGATION' };
+  const LOCO_DE = { idle: 'STEHT', walk: 'LAUFEN', crawl: 'KRIECHEN', rotate: 'DREHEN', turnTo: 'WENDEN', nav: 'NAVIGATION', shift: 'RANGIEREN' };
 
   const UI = (A.UI = {
     sliders: [], toggles: [], btns: {}, acc: 0, fpsAcc: 0, fpsN: 0, alertT: 0,
@@ -70,7 +70,9 @@
           { t: 'btn', label: 'Greifer öffnen', fn: () => { if (arm.held) M.releasePayload(); arm.graspTarget = null; arm.target.gap = A.CFG.arm.maxGap; A.Log.add('Greifer öffnet'); } },
           { t: 'btn', label: 'Greifer schließen', fn: () => A.Main.manualClose() },
           { t: 'btn', label: '③ Greif-Demo', cls: 'warn', fn: () => M.grab() },
-          { t: 'btn', label: 'Trümmer loslassen', fn: () => M.release() },
+          { t: 'btn', label: 'Last loslassen', fn: () => M.release() },
+          { t: 'btn', label: 'Träger räumen + stapeln', cls: 'full', fn: () => M.beams() },
+          { t: 'btn', label: 'Regal: ein- und auslagern', cls: 'full', fn: () => M.rack() },
         ] },
         { title: 'SENSOREN', id: 'sensors', items: [
           { t: 'sl', label: 'Sensorkopf-Drehung', key: 'headYaw', min: -120, max: 120, step: 1, fmt: (v) => v.toFixed(0) + '°' },
@@ -231,8 +233,13 @@
         fail: () => { if (S.fault) M.stabilize(); else M.run('failure'); },
         climb: () => M.climb(),
         tunnel: () => M.run('tunnel'),
+        beams: () => M.beams(),
+        rack: () => M.rack(),
       };
       document.querySelectorAll('#demo-strip button').forEach((b) => (b.onclick = () => demos[b.dataset.demo]()));
+      // narrow desktop: the demo strip wraps to two rows — view buttons and HUD readout move below it
+      const strip = $('demo-strip'), fitStrip = () => $('viewport').style.setProperty('--strip-b', (strip.offsetTop + strip.offsetHeight + 8) + 'px');
+      window.addEventListener('resize', fitStrip); fitStrip();
       document.querySelectorAll('#viewbtns button').forEach((b) => (b.onclick = () => A.Main.view(b.dataset.view)));
       document.querySelectorAll('#mobilenav button').forEach((b) => (b.onclick = () => {
         const d = b.dataset.drawer === 'none' ? null : b.dataset.drawer;
@@ -335,7 +342,7 @@
     // ------------------------------------------------------------------ minimap
     drawMap() {
       const g = this.map, W = g.canvas.width, H = g.canvas.height, R = A.robot;
-      const sc = 8.6, cx = W / 2 - 1.0 * sc, cz = H / 2 + 0.5 * sc;
+      const sc = 7.4, cx = W / 2 - 1.5 * sc, cz = H / 2 - 1.2 * sc; // z −14 … +16.7 m (tunnel end to yard)
       const X = (x) => cx + x * sc, Z = (z) => cz + z * sc;
       g.fillStyle = '#070a0c'; g.fillRect(0, 0, W, H);
       g.strokeStyle = '#111a20'; g.lineWidth = 1;
@@ -371,7 +378,7 @@
       // drone
       const dr = A.DroneSys;
       if (dr.state !== 'docked') { g.fillStyle = '#29d3ff'; g.beginPath(); g.arc(X(dr.pos.x), Z(dr.pos.z), 3, 0, 7); g.fill(); g.strokeStyle = 'rgba(41,211,255,0.3)'; g.beginPath(); g.moveTo(X(p.x), Z(p.z)); g.lineTo(X(dr.pos.x), Z(dr.pos.z)); g.stroke(); }
-      g.fillStyle = '#4f606c'; g.font = '9px JetBrains Mono, monospace'; g.fillText('TUNNEL', X(-0.9), Z(-12.9)); g.fillText('HALLE', X(7.6), Z(-5.2)); g.fillText('TRÜMMER', X(-9), Z(-2.6)); g.fillText('KLETTERN', X(-1.2), Z(11.2));
+      g.fillStyle = '#4f606c'; g.font = '9px JetBrains Mono, monospace'; g.fillText('TUNNEL', X(-0.9), Z(-12.9)); g.fillText('HALLE', X(7.6), Z(-5.2)); g.fillText('TRÜMMER', X(-9), Z(-2.6)); g.fillText('KLETTERN', X(-1.2), Z(11.2)); g.fillText('HOF', X(9.2), Z(8.6));
     },
   });
 })();

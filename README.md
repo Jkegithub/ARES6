@@ -4,7 +4,7 @@
 
 Ein Katastrophen-Rettungsroboter mit sechs Beinen, Greifarm, Sensorkopf, Teleskopmast und
 Erkundungsdrohne in einem prozeduralen Einsatzgelände (eingestürzter Tunnel, Lagerhalle,
-Trümmerfeld, Kletterparcours). Alles wird im Code erzeugt — keine 3D-Modelle, kein Build-Schritt.
+Trümmerfeld, Kletterparcours, Hof mit Regal und Stapelplatz). Alles wird im Code erzeugt — keine 3D-Modelle, kein Build-Schritt.
 
 ## Was die Simulation besonders macht
 
@@ -15,6 +15,9 @@ werden sichtbar verhindert (Warnung, rot aufblitzendes Hindernis) statt durch Ge
 - Dreifußgang mit festen Standfüßen; jeder Tritt wird auf Reichweite, Gelenkgrenzen, Kollision und Schwungbahn geprüft
 - Körper folgt dem Gelände (Rampe, Plateau, Stufen), Bewegung pausiert bei zu kleinem Stabilitätsrand
 - Greifer schließt bis zum Fingerkontakt, Last wird bis zum Bodenkontakt abgesetzt
+- **Lastenhandling:** drei Stahlträger (2,4 m, je 99 kg) räumen und sauber auf Kanthölzern stapeln — mit der
+  Last vor dem Körper dreht sich der Roboter auf der Stelle; Pakete per Frontgriff ins Regal ein- und auslagern
+  und seitlich auf einer Palette ablegen. Traglast 150 kg, schwerere Lasten werden abgelehnt
 - Drohne startet nur bei freiem Luftraum und hält hindernisabhängige Höhe
 - Kriechgang unter einer 1,0-m-Decke; Mast, Körper und Drohne werden dort gestoppt
 - **Physik-Orakel:** eine zweite, unabhängige Prüfung zählt jede Durchdringung der gerenderten Geometrie (Kopfzeile)
@@ -23,8 +26,8 @@ werden sichtbar verhindert (Warnung, rot aufblitzendes Hindernis) statt durch Ge
 
 | | |
 |---|---|
-| **? TOUR** | geführte Tour in 9 Schritten (Deutsch/Englisch) |
-| **Demo-Leiste** | ① Laufen · ② Lidar + Wärme · ③ Greifen · ④ Drohne · ⑤ Fehlertest/Stabilisieren · Klettern · Tunnel |
+| **? TOUR** | geführte Tour in 10 Schritten (Deutsch/Englisch) |
+| **Demo-Leiste** | ① Laufen · ② Lidar + Wärme · ③ Greifen · ④ Drohne · ⑤ Fehlertest/Stabilisieren · Klettern · Tunnel · Träger · Regal |
 | **Missionen** | Tunnelinspektion · Eingestürzte Lagerhalle · Überlebendensuche · Trümmerräumung · Systemfehler-Test |
 | **● AUFNAHME** | Video des ganzen Tabs oder nur des 3D-Fensters als `.webm` |
 | Maus | links ziehen = drehen, rechts / Shift = verschieben, Rad = Zoom |
@@ -38,7 +41,7 @@ Auf dem Handy: unten **☰ STEUERUNG · 3D · TELEMETRIE**; Querformat empfohlen
 `index.html` im Browser öffnen genügt. Beim ersten Start wird Three.js (r128) von cdnjs geladen.
 Optional ein cachefreier lokaler Server: `python tools/serve.py` → http://127.0.0.1:8642/
 
-**Abnahmetest:** `index.html?test` (über einen Server) führt 22 automatische Prüfungen aus
+**Abnahmetest:** `index.html?test` (über einen Server) führt 27 automatische Prüfungen aus
 (inkl. Kalibrierlauf des Orakels) und zählt dabei Orakel-Verstöße; Ergebnis als Overlay und in `window.ARES_TEST`.
 
 ## Aufbau
@@ -55,6 +58,8 @@ eigenen Lizenzen: Three.js r128 (MIT), Schriften Inter und JetBrains Mono über 
 
 ## Grenzen
 
-Kinematische, kollisionsgeprüfte Bewegung — keine Kräfte-Dynamik. Trümmer fallen nur senkrecht.
+Kinematische, kollisionsgeprüfte Bewegung — keine Kräfte-Dynamik. Lasten fallen nur senkrecht und kippen nicht.
+Mit Last dreht sich der Roboter nur auf der Stelle (kein Gehen mit Last). Die Träger-Demo dauert in
+Echtzeit rund 6 Minuten; gelegentlich nimmt der Roboter eine Anfahrt neu auf (im Missionslog sichtbar).
 Felsen kollidieren als ihre Hüllbox. Das Orakel erkennt keine reinen Kante-Kante-Schnitte und prüft
 in festen Abständen (100 ms, auf Handys 500 ms).

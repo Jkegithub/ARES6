@@ -61,7 +61,16 @@
 
   // ------------------------------------------------------------------ environment builder
   const Env = (A.Env = {
-    group: null, debris: [], zones: {}, survivor: null, flashes: [], t: 0,
+    group: null, debris: [], zones: {}, survivor: null, flashes: [], t: 0, supports: [],
+    // rack BS (board centre heights), pallet beside it, beam stacking place + beams [heading°, reach m, skew°]
+    RACK: { x: 11.0, z: 4.0, levels: [0.15, 0.95, 1.75, 2.55] },
+    PALLET: { x: 12.3, z: 6.29, h: 0.144 },
+    STACK: { x: 7.5, z: 12.5, timber: 0.1, stand: 1.97 },
+    YARD_GATE: { x: 3.8, z: 5.0 },
+    BEAM: { len: 2.4, w: 0.16, h: 0.2, tf: 0.012, tw: 0.008 },
+    // per beam: bearing of the stand point from the stack β°, heading offset δ° (robot square to the beam), reach r m
+    // order = pick order: no stand point has to be reached across a beam that is still lying
+    BEAMS: [[20, 20, 0.8], [180, -15, 0.9], [-20, -20, 0.8]],
 
     build(scene) {
       this.scene = scene;
@@ -75,6 +84,9 @@
         crate: new THREE.MeshStandardMaterial({ color: 0x4a5a3a, roughness: 0.9 }),
         rock: new THREE.MeshStandardMaterial({ map: concreteTex(), color: 0x7d7468, roughness: 1, flatShading: true }),
         debris: new THREE.MeshStandardMaterial({ map: concreteTex(), color: 0xa0948a, roughness: 0.9, flatShading: true }),
+        wood: new THREE.MeshStandardMaterial({ color: 0x8a6a44, roughness: 0.95 }),
+        carton: new THREE.MeshStandardMaterial({ color: 0xb4895a, roughness: 0.92 }),
+        tape: new THREE.MeshStandardMaterial({ color: 0xd9c9a0, roughness: 0.6 }),
       });
 
       // floor + grids
@@ -89,6 +101,7 @@
       this.buildDebrisField(M);
       this.buildClimbCourse(M);
       this.buildSurvivor();
+      this.buildYard(M);
       this.spawnDebris();
       this.buildZones();
       this.buildAtmosphere();
@@ -125,12 +138,13 @@
       geo.computeVertexNormals();
       return this.fitted(name, geo, this.mats.rock, x, z, yaw, { standable: false });
     },
-    ibeam(len, w = 0.22, h = 0.28) {
-      const s = new THREE.Shape(), t = 0.035, fw = w / 2, hh = h / 2;
-      s.moveTo(-fw, -hh); s.lineTo(fw, -hh); s.lineTo(fw, -hh + t); s.lineTo(t / 2, -hh + t); s.lineTo(t / 2, hh - t);
-      s.lineTo(fw, hh - t); s.lineTo(fw, hh); s.lineTo(-fw, hh); s.lineTo(-fw, hh - t); s.lineTo(-t / 2, hh - t);
-      s.lineTo(-t / 2, -hh + t); s.lineTo(-fw, -hh + t); s.closePath();
-      const g = new THREE.ExtrudeGeometry(s, { depth: len, bevelEnabled: false });
+    // I-profile, length along local X; tf flange / tw web thickness; steps = rings along the length (oracle probes)
+    ibeam(len, w = 0.22, h = 0.28, tf = 0.035, tw = tf, steps = 1) {
+      const s = new THREE.Shape(), t = tf, fw = w / 2, hh = h / 2, tw2 = tw / 2;
+      s.moveTo(-fw, -hh); s.lineTo(fw, -hh); s.lineTo(fw, -hh + t); s.lineTo(tw2, -hh + t); s.lineTo(tw2, hh - t);
+      s.lineTo(fw, hh - t); s.lineTo(fw, hh); s.lineTo(-fw, hh); s.lineTo(-fw, hh - t); s.lineTo(-tw2, hh - t);
+      s.lineTo(-tw2, -hh + t); s.lineTo(-fw, -hh + t); s.closePath();
+      const g = new THREE.ExtrudeGeometry(s, { depth: len, steps, bevelEnabled: false });
       g.translate(0, 0, -len / 2); g.rotateY(Math.PI / 2); // length along local X
       return g;
     },
@@ -212,7 +226,8 @@
           }
         }
       };
-      shelf(7.5, -4.0); shelf(11.0, -4.0); shelf(7.5, 4.0); shelf(11.0, 4.0);
+      shelf(7.5, -4.0); shelf(11.0, -4.0); shelf(7.5, 4.0);
+      this.buildRack(M, 11.0, 4.0);
       for (const [x, z] of [[5.6, -2.9], [5.6, 2.9], [9.3, -2.9], [9.3, 2.9]]) {
         this.box(`Säule ${x}/${z}`, x, 0, z, 0.45, 3.2, 0.45, 0, M.steel, { standable: false });
         const band = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.6, 0.47), M.hazard); band.position.set(x, 0.3, z); this.group.add(band);
@@ -229,6 +244,28 @@
       this.box('Kiste C2', 12.5, 0, -1.4, 0.9, 0.9, 0.9, -0.2, M.crate, { standable: false });
       this.box('Kiste C3', 12.5, 0.9, -1.4, 0.65, 0.6, 0.65, 0.25, M.crate, { standable: false });
       this.sign('HALLE 3  ·  STATIKSCHADEN', 13.57, 2.4, 0.0, -Math.PI / 2, 3.6, '#ff5b3a');
+    },
+    // rack BS as single collision parts (uprights, boards) so the arm can reach into the compartments;
+    // boards carry loads (support surfaces) but are not footholds
+    buildRack(M, x, z) {
+      const RK = this.RACK;
+      RK.x = x; RK.z = z;
+      for (const sx of [-1.45, 0, 1.45]) for (const sz of [-0.41, 0.41]) this.box('Regal BS Pfosten', x + sx, 0, z + sz, 0.08, 2.6, 0.08, 0, M.rust, { standable: false });
+      RK.levels.forEach((y, i) => {
+        const b = this.box(`Regal BS Boden ${i + 1}`, x, y - 0.025, z, 3.0, 0.05, 0.9, 0, M.steel, { standable: false });
+        this.supports.push(b);
+      });
+      this.floorText('REGAL BS', x, z + 0.9, Math.PI, 1.6);
+    },
+    // yard south of hall 3: pallet for set-aside parcels, beam stacking place with two squared timbers
+    buildYard(M) {
+      const P = this.PALLET;
+      this.box('Palette', P.x, 0, P.z, 0.8, P.h, 1.2, 0, M.wood, { standable: true });
+      const ST = this.STACK;
+      // short timbers well inside the beam ends: the feet of the turning robot pass clear of them
+      for (const dz of [-0.8, 0.8]) this.box('Kantholz', ST.x, 0, ST.z + dz, 0.5, ST.timber, 0.1, 0, M.wood, { standable: true });
+      this.floorText('STAPELPLATZ', ST.x - 0.2, ST.z + 1.8, Math.PI / 2, 2.2);
+      this.floorText('ABLAGE', P.x + 0.75, P.z, Math.PI / 2, 1.4);
     },
     buildDebrisField(M) {
       this.box('Betonblock D1', -6.2, 0, 1.2, 1.4, 0.9, 1.0, 0.4, M.concrete, { standable: false });
@@ -253,7 +290,8 @@
       const edge = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.06, 0.12), M.hazard); edge.position.set(0, 0.27, 7.94); this.group.add(edge);
       this.box('Schuttplatte R1', -0.9, 0, 9.0, 1.5, 0.14, 1.0, 0.15, M.concreteDark, { standable: true });
       this.box('Schuttplatte R2', 1.1, 0, 9.6, 1.3, 0.12, 0.9, -0.2, M.concreteDark, { standable: true });
-      for (const z of [4.0, 7.0, 9.8]) for (const x of [-2.95, 2.95]) {
+      // no bollards at the ramp foot: the gap between ramp and hall column is the access to the yard
+      for (const z of [7.0, 9.8]) for (const x of [-2.95, 2.95]) {
         const ob = this.box('Poller', x, 0, z, 0.24, 0.9, 0.24, 0, M.hazard, { standable: false });
         ob.mesh.geometry = new THREE.CylinderGeometry(0.11, 0.11, 0.9, 14);
       }
@@ -294,22 +332,83 @@
         const mesh = new THREE.Mesh(geo, this.mats.debris); mesh.castShadow = mesh.receiveShadow = true;
         mesh.position.set(x, sy / 2, z); mesh.rotation.y = yaw; this.group.add(mesh);
         const ob = W.add(new A.Obstacle({ name, kind: 'debris', center: mesh.position.clone(), size: new V(sx, sy, sz), yaw, standable: false, mesh }));
-        this.debris.push({ ob, mesh, vy: 0, mass: Math.round(sx * sy * sz * 2300) });
+        this.debris.push({ ob, mesh, vy: 0, mass: Math.round(sx * sy * sz * 2300), type: 'rubble' });
       }
+      this.spawnBeams();
+      this.spawnParcels();
     },
-    nearestDebris(p, maxD = 9) {
+    addLoad(type, name, mesh, size, x, y0, z, yaw, mass) {
+      mesh.position.set(x, y0 + size.y / 2, z); mesh.rotation.y = yaw; mesh.castShadow = mesh.receiveShadow = true; this.group.add(mesh);
+      const ob = W.add(new A.Obstacle({ name, kind: 'debris', center: mesh.position.clone(), size, yaw, standable: false, mesh }));
+      const d = { ob, mesh, vy: 0, mass, type };
+      this.debris.push(d);
+      return d;
+    },
+    // three steel beams lying criss-cross in the yard. Each one lies square in front of a stand point that is
+    // `stand` m from the stack (stack ≤ 20° off the robot's rear axis); the robot grips it, turns on the spot and
+    // faces the stack. Layout searched so the beams keep ≥ 0.2 m apart (open jaws need ~0.15 m).
+    spawnBeams() {
+      const B = this.BEAM, ST = this.STACK, area = 2 * B.w * B.tf + (B.h - 2 * B.tf) * B.tw;
+      const mass = Math.round(area * B.len * 7850);
+      const F = (t) => new V(Math.cos(t), 0, -Math.sin(t));
+      this.BEAMS.forEach(([be, de, r], i) => {
+        const b = be * A.DEG, th = b + de * A.DEG;
+        const P = new V(ST.x, 0, ST.z).addScaledVector(F(b), ST.stand), c = P.clone().addScaledVector(F(th), 0.92 + r);
+        const mesh = new THREE.Mesh(this.ibeam(B.len, B.w, B.h, B.tf, B.tw, 24), this.mats.rust);
+        const d = this.addLoad('beam', `Stahlträger T${i + 1}`, mesh, new V(B.len, B.h, B.w), c.x, 0, c.z, th + Math.PI / 2, mass);
+        d.stand = { P, th, face: U.wrap(b + Math.PI) };
+      });
+    },
+    // parcels: rack BS (lower + middle level, west compartment carries the demo slots) and one on the pallet
+    spawnParcels() {
+      const RK = this.RACK, P = this.PALLET, top = (lvl) => RK.levels[lvl] + 0.025;
+      const fz = RK.z + 0.4; // yard-side faces of the parcels (rack back face at z+0.45)
+      const mk = (name, w, h, d, x, y0, z, yaw, kg) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d, 3, 2, 3), this.mats.carton);
+        const tape = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.004, d + 0.004), this.mats.tape); tape.position.y = h / 2 + 0.001; tape.userData.fx = true; mesh.add(tape);
+        return this.addLoad('parcel', name, mesh, new V(w, h, d), x, y0, z, yaw, kg);
+      };
+      const xw = RK.x - 0.725, xe = RK.x + 0.725;
+      // lower level, west compartment: P1 (demo: take out) between two neighbours
+      mk('Paket P1', 0.34, 0.28, 0.36, xw, top(0), fz - 0.18, 0, 14);
+      mk('Paket P3', 0.3, 0.32, 0.4, xw - 0.43, top(0), fz - 0.2, 0, 18);
+      mk('Paket P4', 0.3, 0.24, 0.34, xw + 0.43, top(0), fz - 0.17, 0, 9);
+      // middle level, west compartment: free slot in the middle (demo: put away)
+      mk('Paket P5', 0.3, 0.3, 0.4, xw - 0.43, top(1), fz - 0.2, 0, 11);
+      mk('Paket P6', 0.3, 0.26, 0.36, xw + 0.43, top(1), fz - 0.18, 0, 8);
+      // east compartment and top level: stock
+      mk('Paket P7', 0.42, 0.34, 0.5, xe - 0.3, top(0), RK.z, 0.05, 21);
+      mk('Paket P8', 0.36, 0.3, 0.44, xe + 0.32, top(0), RK.z, -0.04, 15);
+      mk('Paket P9', 0.5, 0.36, 0.5, xe, top(1), RK.z, 0.03, 24);
+      mk('Paket P10', 0.4, 0.3, 0.45, xw, top(2), RK.z, -0.05, 12);
+      mk('Paket P11', 0.36, 0.28, 0.42, xe + 0.2, top(2), RK.z, 0.06, 10);
+      // on the pallet (gripped across z when facing east)
+      mk('Paket P2', 0.32, 0.26, 0.34, P.x, P.h, P.z, Math.PI / 2, 11);
+    },
+    nearestDebris(p, maxD = 9, type = 'rubble') {
       let best = null, bd = maxD;
-      for (const d of this.debris) { if (d.ob.held) continue; const dd = Math.hypot(d.ob.obb.c.x - p.x, d.ob.obb.c.z - p.z); if (dd < bd) { bd = dd; best = d; } }
+      for (const d of this.debris) { if (d.ob.held || d.type !== type) continue; const dd = Math.hypot(d.ob.obb.c.x - p.x, d.ob.obb.c.z - p.z); if (dd < bd) { bd = dd; best = d; } }
       return best;
     },
-    // support height under a debris box: floor, standable surfaces and other debris tops
+    load(name) { return this.debris.find((d) => d.ob.name === name) || null; },
+    // support height under a load: floor, standable surfaces, rack boards and other loads, sampled over the whole
+    // footprint (a long beam rests on timbers that lie between its ends)
     debrisSupport(d) {
-      const o = d.ob, bottom = o.obb.c.y - o.obb.h.y;
+      const o = d.ob, bottom = o.obb.c.y - o.obb.h.y, h = o.obb.h;
+      const nx = Math.max(1, Math.ceil((2 * h.x) / 0.12)), nz = Math.max(1, Math.ceil((2 * h.z) / 0.12));
       let best = 0;
-      const pts = [[0, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]].map(([a, b]) => o.obb.toWorld(new V(a * o.obb.h.x * 0.95, 0, b * o.obb.h.z * 0.95), new V()));
-      for (const p of pts) {
-        best = Math.max(best, W.surfaceBelow(p.x, p.z, bottom + 0.05, o).y);
-        for (const e of this.debris) if (e !== d && !e.ob.held && e.ob.footprint(p.x, p.z) && e.ob.top <= bottom + 0.05) best = Math.max(best, e.ob.top);
+      const p = new V();
+      for (let i = 0; i <= nx; i++) for (let k = 0; k <= nz; k++) {
+        o.obb.toWorld(p.set(h.x * 0.95 * (2 * i / nx - 1), 0, h.z * 0.95 * (2 * k / nz - 1)), p);
+        best = Math.max(best, W.surfaceBelow(p.x, p.z, bottom + 0.05, o).y); // floor, ramps
+      }
+      // flat supports exactly: footprint overlap by box test (a 10 cm timber can fall between raster points)
+      const probe = new A.OBB(o.obb.c, new V(Math.max(h.x - 0.002, 0.001), 0.0005, Math.max(h.z - 0.002, 0.001)), o.obb.q);
+      for (const s of W.near(o.obb.c, o.radius + 0.2, o)) {
+        if (!s.flat || s.ramp || s.top > bottom + 0.05 || s.top <= best) continue;
+        if (!(s.standable || s.kind === 'debris' || this.supports.includes(s))) continue;
+        probe.c.set(o.obb.c.x, s.top - 0.001, o.obb.c.z);
+        if (probe.intersects(s.obb)) best = s.top;
       }
       return best;
     },
@@ -336,6 +435,8 @@
         debris: { c: [2.6, 0.25], s: [1.6, 1.6], color: 0xf2b705, label: 'TRÜMMERZIEL' },
         climb: { c: [0, 6.6], s: [5.2, 7.2], color: 0x7cff6b, label: 'KLETTERPARCOURS' },
         start: { c: [0, 0], s: [6.4, 6.4], color: 0xff3b3b, label: 'FEHLERISOLATION' },
+        beams: { c: [7.6, 12.5], s: [9.4, 6.2], color: 0xf2b705, label: 'TRÄGERRÄUMUNG' },
+        rack: { c: [11.2, 5.5], s: [4.4, 3.2], color: 0x29d3ff, label: 'REGAL BS' },
       };
       for (const [id, z] of Object.entries(defs)) {
         const mat = new THREE.ShaderMaterial({
